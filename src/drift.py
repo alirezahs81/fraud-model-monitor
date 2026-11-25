@@ -10,7 +10,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy import stats  # may not be available — fallback below
 
 from src.config import FEATURE_COLS, KS_ALERT, KS_WARN, PSI_ALERT, PSI_WARN
 
@@ -28,11 +27,9 @@ def _psi_from_counts(expected: np.ndarray, actual: np.ndarray, eps: float = 1e-4
 def psi_for_feature(ref: np.ndarray, cur: np.ndarray, bins: int = 10) -> float:
     ref = np.asarray(ref, dtype=float)
     cur = np.asarray(cur, dtype=float)
-    # Shared edges from reference quantiles
     quantiles = np.linspace(0, 1, bins + 1)
     edges = np.unique(np.quantile(ref, quantiles))
     if len(edges) < 3:
-        # Degenerate feature
         return 0.0
     exp_counts, _ = np.histogram(ref, bins=edges)
     act_counts, _ = np.histogram(cur, bins=edges)
@@ -73,20 +70,25 @@ def feature_psi_report(
     }
 
 
+def _ks_statistic(ref_scores: np.ndarray, cur_scores: np.ndarray) -> float:
+    try:
+        from scipy.stats import ks_2samp
+
+        return float(ks_2samp(ref_scores, cur_scores).statistic)
+    except Exception:
+        grid = np.sort(np.concatenate([ref_scores, cur_scores]))
+        ref_cdf = np.searchsorted(np.sort(ref_scores), grid, side="right") / len(ref_scores)
+        cur_cdf = np.searchsorted(np.sort(cur_scores), grid, side="right") / len(cur_scores)
+        return float(np.max(np.abs(ref_cdf - cur_cdf)))
+
+
 def ks_score_drift(ref_scores: np.ndarray, cur_scores: np.ndarray) -> dict[str, Any]:
     ref_scores = np.asarray(ref_scores, dtype=float)
     cur_scores = np.asarray(cur_scores, dtype=float)
     if len(ref_scores) < 5 or len(cur_scores) < 5:
         return {"ks": 0.0, "level": "ok", "note": "insufficient samples"}
-    try:
-        ks = float(stats.ks_2samp(ref_scores, cur_scores).statistic)
-    except Exception:
-        # Pure numpy fallback: max CDF gap on pooled grid
-        grid = np.sort(np.concatenate([ref_scores, cur_scores]))
-        ref_cdf = np.searchsorted(np.sort(ref_scores), grid, side="right") / len(ref_scores)
-        cur_cdf = np.searchsorted(np.sort(cur_scores), grid, side="right") / len(cur_scores)
-        ks = float(np.max(np.abs(ref_cdf - cur_cdf)))
 
+    ks = _ks_statistic(ref_scores, cur_scores)
     level = "ok"
     if ks >= KS_ALERT:
         level = "alert"
