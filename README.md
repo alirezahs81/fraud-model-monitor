@@ -8,7 +8,7 @@
 
 **Production-shaped monitoring** for credit-card fraud models — the layer that sits *after* training.
 
-Complements [bank-fraud-detection](https://github.com/alirezahs81/bank-fraud-detection):
+Pairs with [**bank-fraud-detection**](https://github.com/alirezahs81/bank-fraud-detection):
 
 | Concern | What this repo does |
 |---------|---------------------|
@@ -17,27 +17,25 @@ Complements [bank-fraud-detection](https://github.com/alirezahs81/bank-fraud-det
 | **Score drift** | Kolmogorov–Smirnov on prediction probabilities |
 | Delayed labels | Accuracy / precision / recall / F1 / ROC-AUC when labels arrive |
 | Status API | Aggregate `ok` / `warn` / `alert` for ops dashboards |
+| **External model** | `python -m src.register_model --model best_fraud_model.joblib` |
 
-Uses a **synthetic** V1–V28 + Amount generator so CI stays offline (no Kaggle dependency). Swap in a real pipeline artifact when integrating with `bank-fraud-detection`.
+Default CI path uses a **synthetic** V1–V28 + Amount generator (no Kaggle). Production path loads the trained bank-fraud pipeline.
 
 ---
 
 ## Architecture
 
 ```text
-live transaction
-      │
-      ▼
-  /predict  →  model score  →  JSONL log
-                                  │
-                                  ▼
-                         /monitor/status
-                    PSI · KS · labeled metrics
+bank-fraud-detection                 this repo
+train → best_fraud_model.joblib  →  register_model
+                                         │
+live transaction ──► /predict ──► JSONL log ──► /monitor/status
+                                              PSI · KS · labeled metrics
 ```
 
 ---
 
-## Quick start
+## Quick start (synthetic baseline)
 
 ```bash
 git clone https://github.com/alirezahs81/fraud-model-monitor.git
@@ -45,25 +43,29 @@ cd fraud-model-monitor
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-python main.py                 # train baseline, score matched + drifted windows
+python main.py
 pytest tests/ -v
 uvicorn src.api:app --reload --port 8000
 ```
 
-```bash
-# health
-curl -s http://localhost:8000/health
+---
 
-# monitor snapshot
-curl -s http://localhost:8000/monitor/status
-```
-
-### Docker
+## Use the real bank-fraud model
 
 ```bash
-docker build -t fraud-monitor .
-docker run --rm -p 8000:8000 fraud-monitor
+# after training in bank-fraud-detection:
+python -m src.register_model \
+  --model /path/to/bank-fraud-detection/models/best_fraud_model.joblib
+
+# optional: training-frame CSV for a true drift baseline
+python -m src.register_model \
+  --model .../best_fraud_model.joblib \
+  --reference-csv /path/to/train_features.csv
+
+uvicorn src.api:app --port 8000
 ```
+
+Full walkthrough: [docs/INTEGRATION_BANK_FRAUD.md](docs/INTEGRATION_BANK_FRAUD.md)
 
 ---
 
@@ -83,26 +85,18 @@ Tune in `src/config.py`.
 ```text
 fraud-model-monitor/
 ├── src/
-│   ├── data_synth.py      # synthetic PCA-like transactions
-│   ├── model_ops.py       # train/load baseline + reference stats
-│   ├── logging_store.py   # JSONL prediction log
-│   ├── drift.py           # PSI + KS
-│   ├── performance.py     # delayed-label metrics
-│   ├── monitor.py         # orchestration
-│   └── api.py             # FastAPI
+│   ├── data_synth.py
+│   ├── model_ops.py
+│   ├── register_model.py   # bank-fraud artifact import
+│   ├── logging_store.py
+│   ├── drift.py
+│   ├── performance.py
+│   ├── monitor.py
+│   └── api.py
+├── docs/INTEGRATION_BANK_FRAUD.md
 ├── tests/
-├── main.py
 └── Dockerfile
 ```
-
----
-
-## Link to bank-fraud-detection
-
-1. Train your production pipeline in `bank-fraud-detection` and export `models/best_fraud_model.joblib`.
-2. Point `MODEL_PATH` at that artifact (same feature order: V1–V28, Amount).
-3. Rebuild reference stats from the **training** frame only (`means`, `stds`, score sample).
-4. Route live traffic through `/predict` and poll `/monitor/status`.
 
 ---
 
